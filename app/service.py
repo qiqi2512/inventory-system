@@ -1,11 +1,19 @@
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 from fastapi import HTTPException
 from app import models, schemas
 
 #service.py 核心业务逻辑
 
 def reserve_inventory(db: Session, req: schemas.ReserveRequest):
-    # 1. 查询库存并锁定，防止并发修改 
+    # 0. 幂等/防重：先检查 order_no 是否已存在，存在则返回清晰的 409，而不是让数据库唯一约束抛 500
+    existing = db.query(models.Order).filter(
+        models.Order.order_no == req.order_no
+    ).first()
+    if existing:
+        raise HTTPException(status_code=409, detail=f"order_no '{req.order_no}' already exists")
+
+    # 1. 查询库存并锁定，防止并发修改
     # SELECT * FROM inventory WHERE sku = req.sku
     #with_for_update()  悲观锁在查询库存时，这条 SQL 会锁定查到的行，直到当前事务结束
     inventory = db.query(models.Inventory).filter(
@@ -29,7 +37,13 @@ def reserve_inventory(db: Session, req: schemas.ReserveRequest):
         status="RESERVED"
     )
     db.add(order)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # 兜底：极端并发下两个相同 order_no 同时通过了上面的存在性检查，
+        # 这里由数据库唯一约束兜住，回滚后返回 409，保证库存不被错误扣减
+        db.rollback()
+        raise HTTPException(status_code=409, detail=f"order_no '{req.order_no}' already exists")
     db.refresh(order)
     return order
 
