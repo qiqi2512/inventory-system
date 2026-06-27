@@ -14,15 +14,23 @@ docker compose up --build
 
 ### 运行测试
 
+方式一：在 Docker 里一键跑（不用本机装 Python）：
+
 ```bash
-# 自动化单元/接口测试（用 SQLite 内存库，不依赖 Docker）
+docker compose run --rm test
+```
+
+方式二：本机直接跑（用 SQLite 内存库，不依赖 Docker）：
+
+```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
 pytest -v
 ```
 
+方式三：针对已运行服务的端到端冒烟脚本（先 docker compose up，再另开终端执行）：
+
 ```bash
-# 针对已运行服务的端到端冒烟脚本（先 docker compose up，再另开终端执行）
 bash verify.sh
 ```
 
@@ -123,22 +131,35 @@ RESERVED ──→ CONFIRMED
 7. 负数/0 数量 → 422，库存不变
 8. （额外）重复 order_no → 409，不重复扣库存
 
+### 自验证过程中额外发现 / 想清楚的工程问题
+
+除了对照反馈修复的 5 个问题，我在「亲自跑通 + 逐个接口验证」时还遇到并解决了：
+
+1. **测试跑不进现有 app 容器**：`docker compose exec app pytest` 失败——`Dockerfile` 只 `COPY ./app`、生产镜像不含 pytest、`tests/` 也没打进镜像。为此新增 `Dockerfile.test` 和 compose `test` 服务，现在可 `docker compose run --rm test` 在容器里一键跑测试。
+2. **「干净环境」需 `down -v` 才能复现**：数据存在 named volume `pgdata`，`docker compose down` 默认不删卷；叠加 seed 幂等（已存在则跳过），所以模拟全新环境必须 `down -v` 清卷再 `up`。
+3. **seed 必须幂等**：直接 insert 会在重启时撞主键约束导致启动失败，因此改为「先查存在再插」，保证多次启动安全。
+4. **负数返回 422 而非 400**：确认这是 Pydantic 参数校验的标准语义（参数本身非法=422，格式合法但业务规则不满足=400），不是 bug。
+5. **消除 Pydantic v2 弃用警告**：跑测试时发现 `class Config` 弃用警告，改为 `ConfigDict`。
+6. **环境网络坑**：GitHub 连接被重置、Docker Hub 拉 `python:3.11-slim` 超时，通过配置国内镜像加速器解决（正是第一版没解决的同一类网络问题，这次彻底跑通）。
+7. **接口实测发现的两个行为**：SKU 区分大小写（`sku001` 查不到、`SKU001` 才行）；reserve 先校验 order_no 重复、再校验库存，所以用已存在的单号下单会先返回 409 而非 400。
+
 ---
 
-## 六、AI 使用情况（哪些是 AI 做的，哪些是我自己判断和修改的）
+## 六、AI 使用情况（真实分工）
 
-**使用的工具**：ChatGPT / Cursor（代码生成与调试）、FastAPI / SQLAlchemy / PostgreSQL 官方文档。
+**使用的工具**：ChatGPT / Cursor / Claude（代码生成与调试）、FastAPI / SQLAlchemy / PostgreSQL 官方文档。
 
-**AI 帮我完成的**：
-- 生成初始 FastAPI + SQLAlchemy 框架代码。
-- 解释 `with_for_update()` 行级锁、Pydantic 校验、FastAPI lifespan 等概念。
-- 给出 docker-compose `healthcheck` 写法、pytest + SQLite 测试样例的初稿。
+**我怎么用 AI 的**：拿到面试反馈后，我把「反馈 + 第一版源码」一起交给 AI，要求严格对照反馈逐条修复，并先把每条问题定位到具体代码再改。AI 负责把我的修复意图落成代码和原理解释，我负责定方向、做验收、亲自跑通验证。
 
-**我自己判断和修改的**：
-- **定位第一版的真实病根**：AI 最初只建议在 compose 里加 `depends_on`，我实际推演后发现 `depends_on` 只保证启动顺序、不保证数据库进程 ready，于是坚持加上 `healthcheck` + 应用层 `wait_for_db()` 重试双保险，并把 `create_all()` 从导入时移到 lifespan——这是 AI 一开始没有意识到的根因。
-- **状态机的取舍**：AI 倾向于补一个完整的 CREATED 状态，我判断在本业务里「下单即占库存」是原子操作，CREATED 是无副作用的空状态，于是保留简化设计并在 README 写清理由与未来扩展点。
-- **重复 order_no 的处理策略**：AI 给的是直接靠数据库唯一约束兜底（会抛 500），我改成「先查存在性返回 409 + IntegrityError 兜底」，兼顾清晰错误与并发安全。
-- **测试为什么用 SQLite**：我决定用 SQLite 内存库做单元测试以便「任意机器一条命令可跑」，并想清楚了它和真 Postgres 行级锁的边界（并发防超卖不在单测范围），在测试文件顶部写明。
+**AI 帮我做的**：
+- 把 5 条反馈定位到具体代码行并给出实现：`healthcheck`、`wait_for_db()` 重试、lifespan 启动初始化、`Field(gt=0)` 校验、409 防重、pytest 用例。
+- 解释每处改动背后的原理（lifespan 钩子、`depends_on` 与健康检查的区别、`with_for_update()` 悲观锁、Pydantic 校验等）。
+
+**我自己判断 / 亲手做的**：
+- 验收每一处改动是否真解决了对应反馈，理解后才接受。
+- 在干净的 Windows + Docker 环境亲自运行 `docker compose up --build`，并解决了上面「自验证」一节里的网络坑、测试容器化、`down -v` 复现等问题。
+- 想清楚几个设计取舍：seed 为什么要幂等、422 与 400 的语义边界、测试为什么用 SQLite（以及它和真 Postgres 行级锁的边界）。
+- 决定保留简化状态机（合并 CREATED/RESERVED），并能说明理由与未来扩展点。
 
 ---
 
