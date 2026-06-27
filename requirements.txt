@@ -1,4 +1,6 @@
-fastapi
-uvicorn
-sqlalchemy
-psycopg2-binary
+# 锁定版本，保证干净环境可复现构建（解决「不同机器装出不同版本导致跑不起来」）
+fastapi==0.128.8
+uvicorn[standard]==0.39.0
+sqlalchemy==2.0.51
+psycopg2-binary==2.9.12
+pydantic==2.13.4
