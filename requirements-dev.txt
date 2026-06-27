@@ -1,0 +1,4 @@
+# 测试/开发依赖（生产镜像不需要）
+-r requirements.txt
+pytest==8.4.2
+httpx==0.28.1
