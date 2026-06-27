@@ -27,5 +27,14 @@ services:
         # 关键：等 db 健康检查通过后再启动 app，避免连接还没 ready 的数据库
         condition: service_healthy
 
+  # 测试服务：用 SQLite 内存库跑 pytest，不依赖 db 容器。
+  # 用 profiles 标记，docker compose up 不会启动它，只有显式 run 才跑。
+  # 用法：docker compose run --rm test
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    profiles: ["test"]
+
 volumes:
   pgdata:

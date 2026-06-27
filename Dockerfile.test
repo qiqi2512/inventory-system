@@ -1,0 +1,15 @@
+# 专门用于跑测试的镜像：在生产镜像基础上额外装 pytest 并把 tests/ 打进去
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# 安装测试依赖（requirements-dev.txt 里 -r 了生产依赖 + pytest/httpx）
+COPY requirements.txt requirements-dev.txt ./
+RUN pip install --no-cache-dir -r requirements-dev.txt
+
+# 应用代码 + 测试代码都复制进来（生产镜像只复制 app，所以这里要额外加 tests）
+COPY ./app ./app
+COPY ./tests ./tests
+
+# 测试用 SQLite 内存库，不依赖数据库容器
+CMD ["pytest", "-v"]
